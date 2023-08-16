@@ -1,0 +1,383 @@
+---
+title: "Eliminating Racial Bias Relating to Violent Crimes in U.S. Communities using a Predictive Machine Learning Model"
+author: "input our names here"
+format: pdf
+editor: visual
+---
+
+# Reading Libraries and Dataset
+
+```{r}
+#loads packages
+library(dplyr)
+library(ggplot2)
+library(tidyverse)
+library(ggformula)
+packages <- c(
+    # Old packages
+   "tidyverse",
+    "ISLR2",
+    "dplyr",
+    "tidyr",
+    "readr",
+    "purrr",
+    "glmnet",
+    "caret",
+    "repr",
+    # NEW
+    "torch",
+    "mlbench",
+    "Stat2Data",
+    "ggformula",
+    "mosaic",
+    "car",
+    "corrplot"
+)
+
+CrimeData <- read.csv("https://raw.githubusercontent.com/snehaprem03/StatProject/main/communities.data", header = TRUE, na.strings = "?")
+
+#This reads the csv file, addresses the first row as a header, and then changes all the "?" values to NA in order to make it easier to change later
+```
+
+\-
+
+# Introduction to our Data
+
+## **Research Question:**
+
+"Evaluating Racial Bias Relating to Violent Crimes in U.S. Communities Using a Predictive Machine Learning Model."
+
+## **Why is this problem important?**
+
+This problem is important because we want to build a predictive model for the number of violent crimes within U.S. communities. There are many different policy decisions made based on various attributes like race, gender, police force per area, income per area in a community and with the number of violent crimes in the U.S. increasing we wanted to see which of these attributes contribute the most to a high-crime U.S community. 
+
+Most models often conclude that black communities have higher violent crime rates, however we want to eliminate this racial bias in our model and see if it is actually race that affects violent crimes or if it is more nuanced features such as a large police force, high unemployment, etc. It is possible that race is confounding with some other variables when it comes to predicting violent crimes. This can be very important for policy decisions.
+
+# 1. Data Tidying and Manipulation
+
+### 1.1 Understanding Our Data
+
+```{r}
+head(CrimeData) #first few rows
+str(CrimeData) # structure of the data set
+```
+
+```{r}
+summary(CrimeData) #summary statistics + distribution of each variable
+```
+
+```{r}
+CrimeData %>% summarise_all(n_distinct) #number of unique values for each column of the data frame
+```
+
+### 1.2 Cleaning and Pre-Processing Data
+
+```{r}
+CrimeData %>% summarise_all(~ sum(is.na(.)))
+
+# We can see that country, community, LemasSwornFT, LemasSwFTPerPop, LemasSwFTFieldOps, LemasSwFTFieldPerPop, LemasTotalReq, LemasTotReqPerPop, PolicReqPerOffic, PolicPerPo, RacialMatchCom, PctPolicWhite, PctPolicBlack, PctPolicHisp, PctPolicAsian, PctPolicMinor, OfficAssgnDrugUnits, NumKindsDrugsSeiz, PolicAveOTWorked, PolicCars, PolicOperBudg, LemasPctPolicOnPatr, LemasGangUnitDeploy, PolicBudgPerPop all have missing values (1675 for almost all but 1174 and 1177 for the first two)
+
+```
+
+```{r}
+# The LEMAS data seems to have a lot of missing values. About 1675/1994 or 84% of the LEMAS columns have missing data. So, the best way to handle this is probably to drop those columns
+
+
+# Identify columns with more than 80% missing data
+na_percent <- apply(is.na(CrimeData), 2, mean)
+cols_to_drop <- names(na_percent[na_percent > 0.8])
+
+# List Dropped Columns
+cat("Dropped columns:", paste(cols_to_drop, collapse = ", "))
+
+# Drop the columns with more than 80% missing data
+CrimeData <- CrimeData[, !names(CrimeData) %in% cols_to_drop]
+
+
+
+```
+
+```{r}
+# Dropping the County and Community columns"
+
+CrimeData <- CrimeData[, !(names(CrimeData) %in% c("country", "community"))]
+
+```
+
+```{r}
+# OtherPerCap also has one missing row. We can use the mean of the column to replace this NA value since it is the only one
+
+mean_other_percap <- mean(CrimeData$OtherPerCap, na.rm = TRUE)
+CrimeData$OtherPerCap[is.na(CrimeData$OtherPerCap)] <- mean_other_percap
+```
+
+```{r}
+# Final Check for Any Missing Values
+CrimeData %>% summarise_all(~ sum(is.na(.)))
+
+```
+
+### 1.3 Visualizing the Remaining Data
+
+```{r}
+my_summary <- summary(CrimeData)
+print(my_summary, digits = 2)
+
+```
+
+# 2. Variable Creation, Selection, and Manipulation
+
+### 2.1 Dealing with Variable Types
+
+```{r}
+# Fold and State is an int, so let's change that to num to keep everything consistent
+
+CrimeData <- CrimeData %>% mutate(across(c("state", "fold"), as.numeric))
+
+# communityname is also a string. We do not want this in our model as well as communityname can serve as a proxy variable for race
+
+CrimeData <- subset(CrimeData, select = -c(communityname))
+
+
+```
+
+```{r}
+# check types now
+
+str(CrimeData)
+```
+
+### 2.2 Distribution of the Variables
+
+```{r}
+library(moments)
+
+
+# Looking at the Skewness of the Variables
+skewness <- sapply(CrimeData, skewness)
+skewness
+```
+
+```{r}
+# Visualizing the Distributions of Some of the Variables
+par(mfrow = c(2, 5))  # set up 7 rows and 5 columns of plots
+
+for (i in 1:10) {
+  hist(CrimeData[,i], main = names(CrimeData)[i], xlab = "")
+}
+```
+
+### 2.3 Initial Correlation Map
+
+```{r}
+names(CrimeData)
+```
+
+```{r}
+
+# Compute the correlation matrix for crime-related variables
+crime_vars <- c("ViolentCrimesPerPop", "PctKids2Par", "PctFam2Par", "PctPersDenseHous", "PctHousLess3BR", "PctHousOccup", "HousVacant", "PctVacantBoarded")
+corr_matrix_crime <- cor(CrimeData[, crime_vars], use = "pairwise.complete.obs")
+
+# Compute the correlation matrix for demographic variables
+demo_vars <- c("ViolentCrimesPerPop", "racepctblack", "racepctwhite", "racepctasian", "racepcthisp", "pctUrban", "medIncome")
+corr_matrix_demo <- cor(CrimeData[, demo_vars], use = "pairwise.complete.obs")
+
+# Compute the correlation matrix for socioeconomic variables
+soc_vars <- c("ViolentCrimesPerPop", "NumUnderPov", "PctUnemployed", "PctNotHSGrad", "PctEmplManu", "PctEmplProfServ", "PctOccupManu", "PctOccupMgmtProf")
+corr_matrix_soc <- cor(CrimeData[, soc_vars], use = "pairwise.complete.obs")
+
+# Plot the correlation matrices
+library(corrplot)
+
+par(mar = c(1, 1, 2, 1))  # Adjust the margins (bottom, left, top, right)
+
+corrplot(corr_matrix_crime, method = "color", type = "upper", order = "hclust", sig.level = 0.05, insig = "blank", title = "Crime-related Variables", tl.cex = 0.7, mar = c(0, 0, 3, 0))
+corrplot(corr_matrix_demo, method = "color", type = "upper", order = "hclust", sig.level = 0.05, insig = "blank", title = "Demographic Variables", tl.cex = 0.7, mar = c(0, 0, 3, 0))
+corrplot(corr_matrix_soc, method = "color", type = "upper", order = "hclust", sig.level = 0.05, insig = "blank", title = "Socioeconomic Variables", tl.cex = 0.7,  mar = c(0, 0, 3, 0))
+
+
+```
+
+```{r}
+# Initial Correlation Maps to Visualize Initial Relationships. Needed to create multiple to fit all the variables
+
+library(corrplot)
+# Compute the correlation matrix
+corr_matrix1 <- cor(CrimeData[3:21], use = "pairwise.complete.obs")
+corr_matrix2 <- cor(CrimeData[22:40], use = "pairwise.complete.obs")
+corr_matrix3 <- cor(CrimeData[41:55], use = "pairwise.complete.obs")
+corr_matrix4 <- cor(CrimeData[56:70], use = "pairwise.complete.obs")
+corr_matrix5 <- cor(CrimeData[71:87], use = "pairwise.complete.obs")
+corr_matrix6 <- cor(CrimeData[88:103], use = "pairwise.complete.obs")
+
+
+# Plot the correlation matrix with color scale and significance levels
+corrplot(corr_matrix1, method = "color", type = "upper", order = "hclust", sig.level = 0.05, insig = "blank")
+corrplot(corr_matrix2, method = "color", type = "upper", order = "hclust", sig.level = 0.05, insig = "blank")
+corrplot(corr_matrix3, method = "color", type = "upper", order = "hclust", sig.level = 0.05, insig = "blank")
+corrplot(corr_matrix4, method = "color", type = "upper", order = "hclust", sig.level = 0.05, insig = "blank")
+corrplot(corr_matrix5, method = "color", type = "upper", order = "hclust", sig.level = 0.05, insig = "blank")
+corrplot(corr_matrix6, method = "color", type = "upper", order = "hclust", sig.level = 0.05, insig = "blank")
+
+```
+
+# 3. Introductory Plots and Further EDA
+
+As we can see in this graph comparing violent crimes with median income, there are many more violent crimes per 100k in the 0.00 to 0.50 range of median income. While the 0.50 to 1.00 range for median income has considerably less violent crimes. This relationship appears to be fairly strong, and median income may very likely be a very strong predictor in our data.
+
+```{r}
+#This creates a quick graph comparing violent crimes and race
+ggplot(CrimeData, aes(x = racepctblack, y = ViolentCrimesPerPop)) +
+  geom_point(aes(color = "Black")) +
+  geom_point(aes(x = racepctwhite, y = ViolentCrimesPerPop, color = "White")) +
+  geom_point(aes(x = racepctasian, y = ViolentCrimesPerPop, color = "Asian")) +
+  geom_point(aes(x = racepcthisp, y = ViolentCrimesPerPop, color = "Hispanic")) +
+  xlab("Race Percentage") +
+  ylab("Violent Crimes per Population") +
+  ggtitle("Race and Violent Crime") +
+  theme_bw() +
+  scale_color_manual(name = "Race", values = c("Black" = "black", "White" = "grey", "Asian" = "red", "Hispanic" = "green"))
+```
+
+```{r}
+# Correlation Coefficients, however this does not indicate causality
+cor(CrimeData$ViolentCrimesPerPop, CrimeData$racepctblack)
+cor(CrimeData$ViolentCrimesPerPop, CrimeData$racepcthisp)
+cor(CrimeData$ViolentCrimesPerPop, CrimeData$racepctwhite)
+cor(CrimeData$ViolentCrimesPerPop, CrimeData$racepctasian)
+
+```
+
+```{r}
+#This creates a quick graph comparing violent crimes and median income
+gf_point(ViolentCrimesPerPop ~ medIncome, data = CrimeData) +
+    geom_smooth(aes(x = ViolentCrimesPerPop, y = medIncome))
+
+```
+
+```{r}
+#Initial Multiple Regression Results before Feature Selection
+
+full_model <- lm(ViolentCrimesPerPop ~ ., data = CrimeData)
+summary(full_model)
+summary(full_model)$coefficient
+
+
+# The p-value for the F statistic is < 2.2e-16 which is highly significant so at least one of the predictor variables is relevant to predicting ViolentCrimes. However, the F-statistic is a little low. In these results, you can see that assuming a sig-level of 0.05, racepctblack is extremely significant along with PctEmploy, PctWorkMom, RentLowQ, and NumStreet
+```
+
+```{r}
+# We can also fit models with interaction effects of variables we believe may be related
+interaction_model1 <- lm(ViolentCrimesPerPop ~ racepctwhite + PctFam2Par + racepctwhite:PctFam2Par, data = CrimeData)
+interaction_model2 <- lm(ViolentCrimesPerPop ~ racepcthisp + PctRecentImmig + racepcthisp:PctRecentImmig, data = CrimeData)
+summary(interaction_model1)
+summary(interaction_model2)
+```
+
+# 4. Model Pre-Processing
+
+### 4.1 Multicollinearity
+
+Here we are testing for multicollinearity in our data. Any data that has a value greater than 5 creates the risk of multicollinearity.
+
+```{r}
+
+#We will likely use the following code, once we make our model, to test for multicollinearity.
+library(car)
+
+vif(full_model) %>% knitr::kable()
+```
+
+### 4.2 Addressing the Skewness of the Data
+
+We can see that many of our variables are skewed to various degrees. We want to address this before building our regression model
+
+```{r}
+# Addressing the Skewness of the Data - Normalization
+
+
+
+
+```
+
+### 4.2 Further Visualizations
+
+We can also use ggplot to visually compare violent crime percentage with some key variables. We want to see what some of these relationships are before building our model.
+
+```{r}
+# These ggplots will display scatterplots of different variables vs violent crime and show a line that attempts to fit the data
+Plot <- ggplot(CrimeData)
+Plot + 
+  geom_point(aes(x = PctFam2Par, y = ViolentCrimesPerPop)) +
+  geom_smooth(aes(x = PctFam2Par, y = ViolentCrimesPerPop))
+Plot + 
+  geom_point(aes(x = racepctblack, y = ViolentCrimesPerPop)) +
+  geom_smooth(aes(x = racepctblack, y = ViolentCrimesPerPop))
+Plot + 
+  geom_point(aes(x = racepctwhite, y = ViolentCrimesPerPop)) +
+  geom_smooth(aes(x = racepctwhite, y = ViolentCrimesPerPop))
+Plot + 
+  geom_point(aes(x = racepctasian, y = ViolentCrimesPerPop)) +
+  geom_smooth(aes(x = racepctasian, y = ViolentCrimesPerPop))
+Plot + 
+  geom_point(aes(x = racepcthisp, y = ViolentCrimesPerPop)) +
+  geom_smooth(aes(x = racepcthisp, y = ViolentCrimesPerPop))
+Plot + 
+  geom_point(aes(x = PctNotHSGrad, y = ViolentCrimesPerPop)) +
+  geom_smooth(aes(x = PctNotHSGrad, y = ViolentCrimesPerPop))
+Plot + 
+  geom_point(aes(x = PctUnemployed, y = ViolentCrimesPerPop)) +
+  geom_smooth(aes(x = PctUnemployed, y = ViolentCrimesPerPop))
+
+```
+
+# Model Building
+
+### 5.1 Building a Model Including the Race Predictors
+
+### 5.2 Eliminating the Race Variables
+
+```{r}
+# Using Lasso as a Feature Selection Technique
+
+# set.seed(123)
+# train_index <- sample(nrow(CrimeData), 0.7 * nrow(CrimeData))
+# train_data <- crime_data[train_index, ]
+# test_data <- crime_data[-train_index, ]
+# 
+# # Convert the data to matrix format
+# x_train <- as.matrix(train_data[, -ncol(train_data)])
+# y_train <- train_data[, ncol(train_data)]
+# 
+# # Fit a Lasso regression model using cross-validation to select the lambda value
+# lasso_model <- cv.glmnet(x_train, y_train, alpha = 1, standardize = TRUE, nfolds = 10)
+# 
+# # Plot the Lasso coefficients
+# plot(lasso_model)
+# 
+# # Identify the optimal lambda value
+# opt_lambda <- lasso_model$lambda.min
+
+
+
+# 
+# # Use the optimal lambda value to fit the final Lasso model
+# lasso_final_model <- glmnet(x_train, y_train, alpha = 1, standardize = TRUE, lambda = opt_lambda)
+# 
+# # Extract the coefficients from the final model
+# lasso_coef <- coef(lasso_final_model)
+# 
+# # Remove the intercept term
+# lasso_coef <- lasso_coef[-1,]
+# 
+# # Identify the non-zero coefficients
+# non_zero_coef <- which(lasso_coef != 0)
+# 
+# # Select the relevant variables from the dataset
+# relevant_vars <- train_data[, c(non_zero_coef, ncol(train_data))]
+```
+
+## What are your expected outcomes for the project?
+
+Initially, we would want to be able to find the predictors from our dataset that impact the likelihood of violent crimes occurring, which will allow us to have a better understanding of the data, which will give us a stronger model when making predictions regarding violent crimes occurring. Other factors that may influence this can be variables such as race, gender, police force per area, income, etc. From all this, we would have a regression model built on feature selection and encoding algorithms (the number of violent crimes that occur).
